@@ -16,6 +16,7 @@ try:
     import torch._dynamo
     from functorch.compile import make_boxed_func
     from torch._functorch.aot_autograd import aot_module_simplified
+    from torch._functorch.partitioners import min_cut_rematerialization_partition
     from torch._subclasses.fake_tensor import unset_fake_temporarily
     from torch._subclasses.fake_tensor import is_fake
 except ImportError:
@@ -29,7 +30,7 @@ from .profilers import ProfilingResult
 from .profilers.graph_profile import MemoryProfilingInterpreter
 from .patch_compiled_func import patch_compiled_func, unpatch_compiled_func, get_backward_inputs
 from .util import get_input_nodes, get_activation_node_names, get_index_by_graph_id, get_deepcompile_handle, log_rank0, is_backend_inductor
-from .partitioner import get_wrapped_partitioner
+from .partitioner import recompute_params
 from .inductor import register_custom_ops, patch_create_aot_dispatcher_function
 from .input_storage import InputStorage
 
@@ -358,6 +359,8 @@ def make_backend(backend, compile_config, compile_kwargs={}):
 
             return gm.graph
 
+        recompute_params(gm.graph, param_indices)
+
         if backend == "eager":
 
             def make_compiler_fn(make_graph_fn):
@@ -371,13 +374,11 @@ def make_backend(backend, compile_config, compile_kwargs={}):
                                             real_inputs,
                                             fw_compiler=make_compiler_fn(make_fw_graph),
                                             bw_compiler=make_compiler_fn(make_bw_graph),
-                                            partition_fn=get_wrapped_partitioner(param_indices))
+                                            partition_fn=min_cut_rematerialization_partition)
             return torch._dynamo.optimize(**compile_kwargs)(aot_mod)
         elif backend == "inductor":
             patch_create_aot_dispatcher_function(graph_id, z3_partition, make_fw_graph, make_bw_graph, real_inputs,
                                                  param_indices, param_manager)
-            from .partitioner import get_wrapped_choose_saved_values_set
-            torch._functorch.partitioners.choose_saved_values_set = get_wrapped_choose_saved_values_set(param_indices)
 
             return torch._inductor.compile(gm, real_inputs)
 
